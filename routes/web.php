@@ -17,7 +17,7 @@ Route::get('/', function () {
 });
 
 
-Route::post('/monnify/webhook', [PaymentWebhookController::class, 'handleWebhook']);
+Route::post('/billstack/webhook', [PaymentWebhookController::class, 'handleWebhook']);
 
 Route::post('/update-bvn-enrollment-status', [EnrollmentSyncController::class, 'updateStatus']);
 

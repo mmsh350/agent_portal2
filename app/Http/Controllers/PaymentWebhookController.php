@@ -4,14 +4,23 @@ namespace App\Http\Controllers;
 
 use App\Models\Transaction;
 use App\Models\User;
+use App\Models\VirtualAccount;
 use App\Models\Wallet;
 use Carbon\Carbon;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
 
+use function Illuminate\Log\log;
 
 class PaymentWebhookController extends Controller
 {
+
+    protected string $secretKey;
+
+    public function __construct()
+    {
+        $this->secretKey = config('billstack.credentials.secretkey');
+    }
 
     public function handleWebhook(Request $request)
     {
@@ -23,14 +32,14 @@ class PaymentWebhookController extends Controller
 
         // Process the webhook payload
         $payload = $request->all();
-        Log::info('Monnify webhook received:', $payload);
+        Log::info('Billstack webhook received:', $payload);
 
-        switch ($payload['eventType']) {
-            case 'SUCCESSFUL_TRANSACTION':
+        switch ($payload['event']) {
+            case 'PAYMENT_NOTIFICATION':
                 $this->handleSuccessfulTransaction($payload);
                 break;
             default:
-                Log::info('Unhandled event type: ' . $payload['eventType']);
+                Log::info('Unhandled event type: ' . $payload['event']);
         }
 
         return response()->json(['status' => 'success']);
@@ -38,10 +47,17 @@ class PaymentWebhookController extends Controller
 
     private function verifySignature(Request $request)
     {
-        $signature = $request->header('Monnify-Signature');
-        $computedSignature = hash_hmac('sha512', $request->getContent(), env('MONNIFYSECRET'));
-        if ($signature !== $computedSignature) {
-            Log::warning('Monnify webhook signature mismatch.', ['received' => $signature, 'computed' => $computedSignature]);
+        $signature = $request->header('x-wiaxy-signature');
+        if(!$signature)
+        {
+            Log::warning('Billsatck webhook signature not found.');
+
+            return false;
+        }
+        $computedSignature =  md5($this->secretKey);
+
+        if ($signature !==  $computedSignature) {
+            Log::warning('Billstack webhook signature mismatch.', ['received' => $signature, 'key' => $computedSignature]);
 
             return false;
         }
@@ -51,17 +67,18 @@ class PaymentWebhookController extends Controller
 
     private function handleSuccessfulTransaction($payload)
     {
-        $eventData = $payload['eventData'];
+        $eventData = $payload['data'];
 
-        if ($eventData['product']['type'] === 'RESERVED_ACCOUNT') {
+        if ($eventData['type'] === 'RESERVED_ACCOUNT_TRANSACTION') {
             $this->processTransaction($eventData);
         }
     }
 
     private function processTransaction($eventData)
     {
-        $transactionReference = $eventData['transactionReference'];
-        $amountPaid = $eventData['amountPaid'];
+        $transactionReference = $eventData['transaction_ref'];
+        $accountReference = $eventData['reference'];
+        $amountPaid = $eventData['amount'];
         $email = $eventData['customer']['email'];
 
         $transaction = Transaction::where('referenceId', $transactionReference)->first();
@@ -69,13 +86,16 @@ class PaymentWebhookController extends Controller
         Log::warning('Existing Transaction. ', ['Transaction' => $transaction]);
 
         if (! $transaction) {
-            $this->createNewTransaction($email, $transactionReference, $amountPaid);
+            $this->createNewTransaction($email, $transactionReference,$accountReference, $amountPaid);
         }
     }
 
-    private function createNewTransaction($email, $transactionReference, $amountPaid)
+    private function createNewTransaction($email, $transactionReference, $accountReference, $amountPaid)
     {
-        $user = User::where('email', $email)->first();
+        $virtualAccount = VirtualAccount::where('accountReference', trim($accountReference))->first();
+
+        $user = User::where('id', $virtualAccount->user_id)->first();
+
         if ($user) {
             $this->insertTransaction($user->id, $transactionReference, $amountPaid, $user->name, $email, $user->phone_number);
             $this->updateWalletBalance($user->id, $amountPaid);
@@ -97,7 +117,7 @@ class PaymentWebhookController extends Controller
             'service_type' => 'Wallet Topup',
             'service_description' => 'Your wallet has been credited with ₦' . number_format($amountPaid, 2),
             'amount' => $netAmount,
-            'gateway' => 'Monnify',
+            'gateway' => 'Billstack',
             'status' => 'Approved',
             'created_at' => Carbon::now(),
             'updated_at' => Carbon::now(),
@@ -106,7 +126,7 @@ class PaymentWebhookController extends Controller
 
     public function calculateFee($amountPaid){
 
-       return  $fee = round($amountPaid * 0.019, 2);
+       return  $fee = round($amountPaid * 0.005, 2);
 
     }
     private function updateWalletBalance($userId, $amountPaid)

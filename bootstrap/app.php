@@ -28,6 +28,7 @@ return Application::configure(basePath: dirname(__DIR__))
             '/palmpay/webhook',
             '/monnify/webhook',
             '/update-bvn-enrollment-status',
+            '/billstack/webhook'
         ]);
     })
     ->withExceptions(function (Exceptions $exceptions) {
